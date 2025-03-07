@@ -1,61 +1,83 @@
-from flask import Flask, request, render_template,jsonify
-from src.helper import download_hugging_face_embeddings,llm
-from store_index import text_chunks
+from flask import Flask, request, render_template, jsonify
+from src.helper import download_hugging_face_embeddings, llm
 from langchain_pinecone import PineconeVectorStore
-from langchain_groq import ChatGroq
-from langchain.chains import create_retrieval_chain
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain_core.prompts import ChatPromptTemplate
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
-from src.prompt import *
+from src.prompt import system_prompt
 import os
 
-app=Flask(__name__)
+# ✅ Initialize Flask app
+app = Flask(__name__, static_folder="static")
 
+# ✅ Load environment variables
 load_dotenv()
+api_key = os.getenv("PINECONE_API_KEY")
+groq_key = os.getenv("GROQ_API_KEY")
 
-api_key=os.environ.get("PINECONE_API_KEY")
-groq_key=os.environ.get("GROQ_API_KEY")
+# ✅ Debugging: Hide API keys from logs
+print("✅ PINECONE API Key Loaded:", "✔️" if api_key else "❌ Missing")
+print("✅ GROQ API Key Loaded:", "✔️" if groq_key else "❌ Missing")
 
-os.environ["PINECONE_API_KEY"] = api_key
-os.environ["GROQ_API_KEY"] = "groq_key"
+# ✅ Ensure API keys exist
+if not api_key or not groq_key:
+    raise ValueError("❌ Missing API keys. Check your .env file.")
 
-embeddings=download_hugging_face_embeddings()
+# ✅ Initialize embeddings
+embeddings = download_hugging_face_embeddings()
 
-index_name = "newtest"
+# ✅ Initialize Pinecone
+from pinecone import Pinecone
+pc = Pinecone(api_key=api_key)
+print("📝 Available Pinecone Indexes:", pc.list_indexes().names())
 
-# embedded each chunk and upsert the embeddingd into the Pinecone Index
-from langchain_pinecone import PineconeVectorStore
-docsearch=PineconeVectorStore.from_documents(
-    documents=text_chunks,
-    index_name=index_name,
-    embedding=embeddings,
+index_name = "test"
+docsearch = PineconeVectorStore(index_name=index_name, embedding=embeddings)
+retriever = docsearch.as_retriever(search_type="similarity", search_kwargs={"k": 3})
+
+from langchain_core.prompts import PromptTemplate
+
+prompt_template = PromptTemplate(
+    input_variables=["context", "question"],
+    template=(
+        "You are an AI assistant specialized in medical inquiries.\n\n"
+        "Context: {context}\n"
+        "User Question: {question}\n"
+        "If the context does not contain relevant information, say: 'I don't know.'"
+    )
 )
 
-retriever=docsearch.as_retriever(search_type="similarity",search_kwargs={"k":3})
 
-prompt=ChatPromptTemplate.from_messages(
-    [
-        ("system", system_prompt),
-        ("human","{input}"),
-    ]
+# ✅ Updated Retrieval-Augmented Generation (RAG) Chain
+qa_chain = RetrievalQA.from_chain_type(
+    llm=llm,
+    retriever=retriever,
+    chain_type="stuff",
+    return_source_documents=True
 )
-
-question_answer_chain=create_stuff_documents_chain(llm, prompt)
-rag_chain=create_retrieval_chain(retriever, question_answer_chain)
 
 @app.route('/')
 def home():
     return render_template('chat.html')
 
-@app.route('/get',methods=['GET','POST'])
+@app.route('/get', methods=['POST'])
 def chat():
-    msg=request.form("msg")
-    input=msg
-    print(input)
-    response=rag_chain.invoke({"input":msg})
-    print("response",response["answer"])
-    return str(response["answer"])
+    msg = request.form.get("msg")
+    if not msg:
+        return jsonify({"error": "No input message received"}), 400
+    
+    # ✅ Retrieve relevant documents
+    response = qa_chain({"query": msg})
+    retrieved_docs = response.get("source_documents", [])
 
+    # ✅ Debugging: Print retrieved documents
+    print("🔍 Retrieved Documents:")
+    for doc in retrieved_docs:
+        print(f"- {doc.page_content[:300]}...")  # Print first 300 characters
+
+    print("🤖 LLM Response:", response.get("result", "No response."))
+
+    return jsonify({"answer": response.get("result", "No response generated.")})
+    
 if __name__ == '__main__':
-    app.run(host="0.0.0.0",port= 8080,debug=True)
+    app.run(host="0.0.0.0", port=8080, debug=True)

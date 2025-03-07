@@ -7,12 +7,13 @@ setup(
     author_email="adityaranarana2006@gmail.com",
     packages=find_packages(),
     install_requires=[
+        "flask",
         "click",
         "requests",
+        "langchain",
+        "langchain_pinecone",
+        "pinecone-client",
+        "langchain_community",
+        "python-dotenv",
     ],
-    entry_points={
-        'console_scripts': [
-            'myapp=app:cli',
-        ],
-    },
 )
